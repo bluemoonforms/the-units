@@ -1,0 +1,2 @@
+class MissingLeaseFormsException(Exception):
+    pass

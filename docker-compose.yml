@@ -1,0 +1,25 @@
+version: '2.1'
+services:
+  units-api:
+    build:
+      context: ./
+      dockerfile: Dockerfile
+    command: tail -f /dev/null
+    volumes:
+      - ./:/usr/src/app
+    ports:
+      - "9020:8000"
+    env_file: .env
+  db:
+    build:
+      context: ./
+      dockerfile: mysql.dockerfile
+    volumes:
+      - chaliceDemoDb:/var/lib/mysql
+networks:
+  default:
+    external:
+      name: dev-network
+volumes:
+  chaliceDemoDb:
+    external: true
