@@ -1,5 +1,5 @@
-from marshmallow_sqlalchemy import ModelSchema
 from marshmallow import Schema, fields, validate
+from marshmallow_sqlalchemy import ModelSchema
 
 from chalicelib.models import Lease, LeaseEsignature, StatusEnum, User
 

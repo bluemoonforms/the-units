@@ -78,7 +78,7 @@ class BluemoonApi(object):
 
     def logout(self):
         path = "logout"
-        return self.post_json(path=path)
+        return self.post_json(path=path, data={})
 
 
 class BluemoonAuthorization(object):
