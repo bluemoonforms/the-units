@@ -38,7 +38,7 @@ class LeaseEsignatureSchema(ModelSchema):
 class UserSchema(ModelSchema):
     class Meta:
         model = User
-        excluede = ("leases",)
+        exclude = ("leases",)
 
 
 class PaginatedLeaseSchema(Schema):
