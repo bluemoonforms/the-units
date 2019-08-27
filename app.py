@@ -108,7 +108,7 @@ def leases():
 
 @app.route("/lease/{id}", authorizer=demo_auth, methods=["GET", "POST"], cors=True)
 def lease(id):
-    """Fetches lease and handles the callback."""
+    """Fetches lease and handles updates."""
     request = app.current_request
     user_id = request.context["authorizer"]["principalId"]
 
@@ -116,6 +116,26 @@ def lease(id):
     session = db.session()
     query = session.query(Lease)
     lease = query.filter(Lease.id == id).filter(Lease.user_id == user_id).first()
+    if not lease:
+        return gzip_response(data={"message": "Not Found"}, status_code=404)
+
+    if request.method == "POST" and "id" in request.json_body:
+        print('update lease')
+        session.add(lease)
+        session.commit()
+
+    return gzip_response(data=LeaseSchema().dump(lease), status_code=200)
+
+
+@app.route("/lease/callback/{id}", methods=["POST"], cors=True)
+def lease_callback(id):
+    """Fetches lease and handles the callback."""
+    request = app.current_request
+
+    db = DatabaseConnection()
+    session = db.session()
+    query = session.query(Lease)
+    lease = query.filter(Lease.id == id).first()
     if not lease:
         return gzip_response(data={"message": "Not Found"}, status_code=404)
 
@@ -133,8 +153,8 @@ def lease_forms():
     lease_forms = bm_api.lease_forms()
     if not lease_forms:
         return api_error_response()
-
-    return gzip_response(data={"data": lease_forms}, status_code=200)
+    response = {"data": lease_forms}
+    return gzip_response(data=response, status_code=200)
 
 
 @app.route(
@@ -309,7 +329,7 @@ def configuration(id):
         "propertyNumber": bm_api.property_number(),
         "accessToken": token,
         "view": "create",
-        "callBack": "{}/{}".format(os.getenv("UNITS_URL"), lease.id),
+        "callBack": "{}/lease/callback/{}".format(os.getenv("UNITS_URL_EXTERNAL"), lease.id),
         "leaseData": {
             "standard": {"address": "123 Super Dr.", "unit_number": lease.unit_number}
         },
@@ -327,19 +347,19 @@ def logout():
 @app.route("/notifications", methods=["POST"])
 def notifications():
     data = app.current_request.json_body
-    if "data" not in data:
+    if "id" not in data:
         return gzip_response(data={"message": "Bad Request"}, status_code=405)
 
     db = DatabaseConnection()
     session = db.session()
     query = session.query(LeaseEsignature)
     lease_esignature = query.filter(
-        LeaseEsignature.bluemoon_id == data["data"]["id"]
+        LeaseEsignature.bluemoon_id == data["id"]
     ).first()
 
-    lease_esignature.data = data["data"]
+    lease_esignature.data = data
     try:
-        signers_data = data["data"]["esign"]["data"]["signers"]["data"]
+        signers_data = data["esign"]["data"]["signers"]["data"]
         lease_esignature.transition_status(signers_data=signers_data)
     except KeyError:
         pass

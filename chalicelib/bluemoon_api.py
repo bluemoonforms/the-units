@@ -68,7 +68,6 @@ class BluemoonApi(object):
     def property_number(self):
         path = "property"
         data = self.get_json(path=path)
-
         # Try to get the aptdb property number
         for prop in data["data"]:
             if prop["unit_type"] == "aptdb":
