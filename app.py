@@ -35,6 +35,7 @@ BUCKET = os.getenv("AWS_BUCKET")
 
 @app.authorizer()
 def demo_auth(auth_request):
+    """This is just the demo apps authentication check, nothing special."""
     auth_api = BluemoonAuthorization()
     token = auth_request.token
     if token.startswith("Bearer "):
@@ -43,11 +44,12 @@ def demo_auth(auth_request):
     if authorized:
         return AuthResponse(routes=["*"], principal_id=authorized.id)
     else:
-        return AuthResponse(routes=[], principal_id="id")
+        return AuthResponse(routes=[], principal_id=None)
 
 
 @app.route("/login", methods=["POST"], cors=True)
 def login():
+    """Dual purpose login, local and Bluemoon."""
     request = app.current_request
     auth_api = BluemoonAuthorization()
 
@@ -67,6 +69,7 @@ def login():
 
 @app.route("/", authorizer=demo_auth, methods=["GET"], cors=True)
 def index():
+    """Fetch the details about currently logged in Bluemoon user."""
     request = app.current_request
     token = get_token(request)
     api = BluemoonApi(token=token)
@@ -75,7 +78,7 @@ def index():
 
 @app.route("/leases", authorizer=demo_auth, methods=["GET", "POST"], cors=True)
 def leases():
-    """Filters and returns list of leases."""
+    """Filters and returns list of leases or units, this is local app data."""
     request = app.current_request
     user_id = request.context["authorizer"]["principalId"]
     db = DatabaseConnection()
@@ -108,7 +111,7 @@ def leases():
 
 @app.route("/lease/{id}", authorizer=demo_auth, methods=["GET", "POST"], cors=True)
 def lease(id):
-    """Fetches lease and handles updates."""
+    """Fetches lease unit and handles updates."""
     request = app.current_request
     user_id = request.context["authorizer"]["principalId"]
 
@@ -120,9 +123,10 @@ def lease(id):
         return gzip_response(data={"message": "Not Found"}, status_code=404)
 
     if request.method == "POST" and "id" in request.json_body:
-        print('update lease')
-        session.add(lease)
-        session.commit()
+        # Currently there is no update available
+        app.log.info("update lease")
+        # session.add(lease)
+        # session.commit()
 
     return gzip_response(data=LeaseSchema().dump(lease), status_code=200)
 
@@ -130,6 +134,7 @@ def lease(id):
 @app.route("/lease/callback/{id}", methods=["POST"], cors=True)
 def lease_callback(id):
     """Fetches lease and handles the callback."""
+    # This endpoint receives the AJAX request from the lease-editor
     request = app.current_request
 
     db = DatabaseConnection()
@@ -139,6 +144,8 @@ def lease_callback(id):
     if not lease:
         return gzip_response(data={"message": "Not Found"}, status_code=404)
 
+    # The request body contains the full lease object but I only care about
+    # the lease id
     if request.method == "POST" and "id" in request.json_body:
         lease.bluemoon_id = request.json_body["id"]
         session.add(lease)
@@ -203,6 +210,55 @@ def lease_request_esign(id):
     )
 
 
+@app.route(
+    "/lease/esignature/pdf/{id}", authorizer=demo_auth, methods=["GET"], cors=True
+)
+def fetch_esignature_document(id):
+    """Fetch the complete lease document with receipt"""
+    app.log.debug("here")
+    user_id = app.current_request.context["authorizer"]["principalId"]
+    token = get_token(request=app.current_request)
+
+    db = DatabaseConnection()
+    session = db.session()
+    query = session.query(LeaseEsignature).join("lease")
+    lease_esignature = (
+        query.filter(LeaseEsignature.id == id).filter(Lease.user_id == user_id).first()
+    )
+    if not lease_esignature:
+        return gzip_response(data={"message": "Not Found"}, status_code=404)
+
+    bm_api = BluemoonApi(token=token)
+    response = bm_api.get_raw(
+        path="esignature/lease/pdf/{}".format(lease_esignature.bluemoon_id)
+    )
+    content_type = response.headers.get("Content-Type")
+    context = {}
+
+    if content_type == "application/pdf":
+        length = 0
+        mem = io.BytesIO()
+        for chunk in response.iter_content(chunk_size=128):
+            length += len(chunk)
+            mem.write(chunk)
+        mem.seek(0)
+
+        now = datetime.datetime.now()
+        file_name = "{0:%d}/{0:%m}/{1}.pdf".format(now, uuid.uuid4().hex)
+        s3_client.upload_fileobj(mem, BUCKET, file_name)
+        signed_url = s3_client.generate_presigned_url(
+            ClientMethod="get_object",
+            Params={"Bucket": BUCKET, "Key": file_name},
+            ExpiresIn=3600,
+        )
+        context["success"] = True
+        context["url"] = signed_url
+    elif content_type == "application/json":
+        context.update(response.json())
+
+    return gzip_response(data=context, status_code=200)
+
+
 @app.route("/lease/print/{id}", authorizer=demo_auth, methods=["POST"], cors=True)
 def lease_print(id):
     """Print requires the lease_id as it just uses that data, no esignature request."""
@@ -264,6 +320,7 @@ def lease_execute(id):
     request = app.current_request
     user_id = request.context["authorizer"]["principalId"]
 
+    # Validate the json request
     try:
         execute_data = ExecuteSchema().load(request.json_body)
     except ValidationError as err:
@@ -277,6 +334,7 @@ def lease_execute(id):
     lease_esignature = (
         query.filter(LeaseEsignature.id == id).filter(Lease.user_id == user_id).first()
     )
+    # Make sure the corresponding item exists in the database
     if not lease_esignature:
         return gzip_response(data={"message": "Not Found"}, status_code=404)
     bm_api = BluemoonApi(token=get_token(request=request))
@@ -295,7 +353,9 @@ def lease_execute(id):
         pass
     session.add(lease_esignature)
     session.commit()
+    # End status update check
 
+    # Verify we can execute the document
     if lease_esignature.status != StatusEnum.signed:
         data = {
             "success": False,
@@ -303,9 +363,11 @@ def lease_execute(id):
         }
         return gzip_response(data=data, status_code=404)
 
+    # Execute the document
     response = bm_api.execute_lease(
-        bm_id=lease_esignature.lease.bluemoon_id, data=execute_data
+        bm_id=lease_esignature.bluemoon_id, data=execute_data
     )
+    # TODO: Add url to Bluemoon response and return value.
     success = "executed" in response and response["executed"]
 
     return gzip_response(data={"success": success}, status_code=200)
@@ -324,12 +386,16 @@ def configuration(id):
     token = get_token(request=app.current_request)
     bm_api = BluemoonApi(token=token)
 
+    # Configuration object for lease-editor. Passing in some basic data along with
+    # a generated callback url
     configuration = {
         "apiUrl": bm_api.url,
         "propertyNumber": bm_api.property_number(),
         "accessToken": token,
         "view": "create",
-        "callBack": "{}/lease/callback/{}".format(os.getenv("UNITS_URL_EXTERNAL"), lease.id),
+        "callBack": "{}/lease/callback/{}".format(
+            os.getenv("UNITS_URL_EXTERNAL"), lease.id
+        ),
         "leaseData": {
             "standard": {"address": "123 Super Dr.", "unit_number": lease.unit_number}
         },
@@ -346,19 +412,20 @@ def logout():
 
 @app.route("/notifications", methods=["POST"])
 def notifications():
+    """Lease Esignature Requests notifications from Bluemoon."""
     data = app.current_request.json_body
+    # Verify the data fits the minimum standars
     if "id" not in data:
         return gzip_response(data={"message": "Bad Request"}, status_code=405)
 
     db = DatabaseConnection()
     session = db.session()
     query = session.query(LeaseEsignature)
-    lease_esignature = query.filter(
-        LeaseEsignature.bluemoon_id == data["id"]
-    ).first()
+    lease_esignature = query.filter(LeaseEsignature.bluemoon_id == data["id"]).first()
 
     lease_esignature.data = data
     try:
+        # The data is a bit nested, but ideally Bluemoon API will pass a document status soon
         signers_data = data["esign"]["data"]["signers"]["data"]
         lease_esignature.transition_status(signers_data=signers_data)
     except KeyError:

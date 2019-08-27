@@ -64,6 +64,10 @@ class LeaseEsignature(Base):
         return "<LeaseEsignature %r>" % self.id
 
     def transition_status(self, signers_data):
+        """Determine status of esignatures based on signers data."""
+        # As this is Bluemoon logic and there are other possible
+        # statuses such as expired. A ticket has been created to
+        # include the status on the object
         signers = 0
         signed = 0
         owner = False
@@ -71,6 +75,7 @@ class LeaseEsignature(Base):
             if signer["identifier"] == "owner":
                 owner = signer["completed"]
                 continue
+
             signers += 1
             if signer["completed"]:
                 signed += 1
